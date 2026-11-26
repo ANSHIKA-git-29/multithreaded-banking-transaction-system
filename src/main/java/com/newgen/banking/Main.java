@@ -2,23 +2,31 @@
 package com.newgen.banking;
 
 import com.newgen.banking.config.DBConnection;
-import java.sql.Connection;
-import java.sql.SQLException;
+import com.newgen.banking.simulator.PerformanceSimulator;
 
 public class Main {
 
-    public static void main(String[] args) {
+    public static void main(String[] args)
+            throws InterruptedException {
 
-        try (Connection connection = DBConnection.getConnection()) {
+        try {
+            int totalTransactions = 50000;
 
-            System.out.println("MySQL Connected Successfully!");
-            System.out.println("Database: " +
-                    connection.getCatalog());
+            int[] threadCounts = {1,5,10, 20};
 
-        } catch (SQLException e) {
+            for (int threads : threadCounts) {
 
-            System.out.println("Database Connection Failed!");
-            e.printStackTrace();
+                System.out.println("\nTesting with "
+                        + threads + " threads...");
+
+                PerformanceSimulator.runTest(
+                        threads,
+                        totalTransactions
+                );
+            }
+
+        } finally {
+            DBConnection.closeDataSource();
         }
     }
 }

@@ -1,22 +1,41 @@
 
 package com.newgen.banking.config;
 
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
+
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.SQLException;
 
 public class DBConnection {
 
-    private static final String URL =
-            "jdbc:mysql://localhost:3306/banking_system";
+    private static final HikariDataSource dataSource;
 
-    private static final String USER = "root";
+    static {
+        HikariConfig config = new HikariConfig();
 
-    private static final String PASSWORD = "Anshika*29";
+        config.setJdbcUrl(
+                "jdbc:mysql://localhost:3306/banking_system"
+        );
+
+        config.setUsername("root");
+        config.setPassword(System.getenv("DB_PASSWORD"));
+
+        config.setMaximumPoolSize(20);
+        config.setMinimumIdle(5);
+
+        config.setConnectionTimeout(30000);
+
+        dataSource = new HikariDataSource(config);
+    }
 
     public static Connection getConnection() throws SQLException {
-        return DriverManager.getConnection(URL, USER, PASSWORD);
+        return dataSource.getConnection();
+    }
+
+    public static void closeDataSource() {
+        if (dataSource != null && !dataSource.isClosed()) {
+            dataSource.close();
+        }
     }
 }
-
-
