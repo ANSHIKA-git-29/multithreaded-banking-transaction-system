@@ -15,16 +15,26 @@ public class BankingService {
     private final AccountDAO accountDAO = new AccountDAO();
     private final TransactionDAO transactionDAO = new TransactionDAO();
 
-    // Deposit money
+    // Deposit with automatically generated transaction ID
     public boolean deposit(long accountId, BigDecimal amount)
             throws SQLException {
 
+        return deposit(accountId, amount, UUID.randomUUID().toString());
+    }
+
+    // Deposit with idempotency protection
+    public boolean deposit(long accountId, BigDecimal amount,
+                           String transactionId) throws SQLException {
+
         validateAmount(amount);
+        validateTransactionId(transactionId);
 
         try (Connection connection = DBConnection.getConnection()) {
             connection.setAutoCommit(false);
 
             try {
+                checkDuplicateTransaction(connection, transactionId);
+
                 boolean success =
                         accountDAO.deposit(connection, accountId, amount);
 
@@ -33,35 +43,49 @@ public class BankingService {
                 }
 
                 transactionDAO.saveTransaction(
-                        connection,
-                        UUID.randomUUID().toString(),
-                        null,
-                        accountId,
+                        connection, transactionId, null, accountId,
+                        "DEPOSIT", amount, "SUCCESS"
+                );
+
+                transactionDAO.saveAudit(
+                        connection, transactionId,
                         "DEPOSIT",
-                        amount,
-                        "SUCCESS"
+                        "Deposit of " + amount +
+                                " to account " + accountId
                 );
 
                 connection.commit();
                 return true;
 
             } catch (SQLException | RuntimeException e) {
-                connection.rollback();
+                rollbackAndLogFailure(
+                        connection, transactionId, e
+                );
                 throw e;
             }
         }
     }
 
-    // Withdraw money
+    // Withdraw with automatically generated transaction ID
     public boolean withdraw(long accountId, BigDecimal amount)
             throws SQLException {
 
+        return withdraw(accountId, amount, UUID.randomUUID().toString());
+    }
+
+    // Withdraw with idempotency protection
+    public boolean withdraw(long accountId, BigDecimal amount,
+                            String transactionId) throws SQLException {
+
         validateAmount(amount);
+        validateTransactionId(transactionId);
 
         try (Connection connection = DBConnection.getConnection()) {
             connection.setAutoCommit(false);
 
             try {
+                checkDuplicateTransaction(connection, transactionId);
+
                 boolean success =
                         accountDAO.withdraw(connection, accountId, amount);
 
@@ -72,31 +96,50 @@ public class BankingService {
                 }
 
                 transactionDAO.saveTransaction(
-                        connection,
-                        UUID.randomUUID().toString(),
-                        accountId,
-                        null,
+                        connection, transactionId, accountId, null,
+                        "WITHDRAW", amount, "SUCCESS"
+                );
+
+                transactionDAO.saveAudit(
+                        connection, transactionId,
                         "WITHDRAW",
-                        amount,
-                        "SUCCESS"
+                        "Withdrawal of " + amount +
+                                " from account " + accountId
                 );
 
                 connection.commit();
                 return true;
 
             } catch (SQLException | RuntimeException e) {
-                connection.rollback();
+                rollbackAndLogFailure(
+                        connection, transactionId, e
+                );
                 throw e;
             }
         }
     }
 
-    // Transfer money between two accounts
+    // Transfer with automatically generated transaction ID
     public boolean transfer(long fromAccountId,
                             long toAccountId,
                             BigDecimal amount) throws SQLException {
 
+        return transfer(
+                fromAccountId,
+                toAccountId,
+                amount,
+                UUID.randomUUID().toString()
+        );
+    }
+
+    // Transfer with idempotency protection
+    public boolean transfer(long fromAccountId,
+                            long toAccountId,
+                            BigDecimal amount,
+                            String transactionId) throws SQLException {
+
         validateAmount(amount);
+        validateTransactionId(transactionId);
 
         if (fromAccountId == toAccountId) {
             throw new IllegalArgumentException(
@@ -108,6 +151,8 @@ public class BankingService {
             connection.setAutoCommit(false);
 
             try {
+                checkDuplicateTransaction(connection, transactionId);
+
                 // Lock accounts in ascending ID order
                 long firstId = Math.min(fromAccountId, toAccountId);
                 long secondId = Math.max(fromAccountId, toAccountId);
@@ -147,36 +192,99 @@ public class BankingService {
                 }
 
                 transactionDAO.saveTransaction(
-                        connection,
-                        UUID.randomUUID().toString(),
-                        fromAccountId,
-                        toAccountId,
+                        connection, transactionId,
+                        fromAccountId, toAccountId,
+                        "TRANSFER", amount, "SUCCESS"
+                );
+
+                transactionDAO.saveAudit(
+                        connection, transactionId,
                         "TRANSFER",
-                        amount,
-                        "SUCCESS"
+                        "Transferred " + amount +
+                                " from account " + fromAccountId +
+                                " to account " + toAccountId
                 );
 
                 connection.commit();
                 return true;
 
             } catch (SQLException | RuntimeException e) {
-                connection.rollback();
+                rollbackAndLogFailure(
+                        connection, transactionId, e
+                );
                 throw e;
             }
         }
     }
 
+    // Roll back the original transaction and record its failure separately
+    private void rollbackAndLogFailure(
+            Connection connection,
+            String transactionId,
+            Exception originalException) {
+
+        try {
+            connection.rollback();
+        } catch (SQLException rollbackException) {
+            originalException.addSuppressed(rollbackException);
+        }
+
+        // Use a separate connection so failure logging
+        // is not affected by the original rollback.
+        try (Connection failureConnection =
+                     DBConnection.getConnection()) {
+
+            transactionDAO.saveFailedTransaction(
+                    failureConnection,
+                    transactionId,
+                    originalException.getMessage()
+            );
+
+        } catch (SQLException loggingException) {
+            originalException.addSuppressed(loggingException);
+        }
+    }
+
+    // Check for an existing transaction ID
+    private void checkDuplicateTransaction(
+            Connection connection, String transactionId)
+            throws SQLException {
+
+        if (transactionDAO.transactionExists(
+                connection, transactionId)) {
+
+            throw new SQLException(
+                    "Duplicate transaction ID: " + transactionId
+            );
+        }
+    }
+
     // Validate transaction amount
     private void validateAmount(BigDecimal amount) {
-        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
+
+        if (amount == null ||
+                amount.compareTo(BigDecimal.ZERO) <= 0) {
+
             throw new IllegalArgumentException(
                     "Transaction amount must be greater than zero."
             );
         }
     }
 
+    // Validate transaction ID
+    private void validateTransactionId(String transactionId) {
+
+        if (transactionId == null || transactionId.isBlank()) {
+
+            throw new IllegalArgumentException(
+                    "Transaction ID cannot be empty."
+            );
+        }
+    }
+
     // Lock an account during transfer
-    private BigDecimal lockAccount(Connection connection, long accountId)
+    private BigDecimal lockAccount(
+            Connection connection, long accountId)
             throws SQLException {
 
         String sql = "SELECT balance FROM ACCOUNT " +
@@ -188,6 +296,7 @@ public class BankingService {
             ps.setLong(1, accountId);
 
             try (java.sql.ResultSet rs = ps.executeQuery()) {
+
                 if (rs.next()) {
                     return rs.getBigDecimal("balance");
                 }
